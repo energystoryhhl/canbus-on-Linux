@@ -1,0 +1,139 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <pthread.h>
+
+#include "main.h"
+
+
+
+//发送函数
+int canbussend(void *arg)
+{
+    printf("canbus Send!\n");
+    return 0;
+}
+
+
+
+
+/*canbus发送初始化
+返回值：工作队列结构体指针
+*/
+Cthread_sendworkqueue * sendworkqueue_init()
+{
+
+    Cthread_sendworkqueue *sendqueue = (Cthread_sendworkqueue *) malloc (sizeof (Cthread_sendworkqueue)); //为工作队列分配内存
+    pthread_mutex_init (&(sendqueue->sendqueue_lock), NULL);             //初始化互斥锁
+    pthread_cond_init (&(sendqueue->sendqueue_ready), NULL);             //初始化条件变量
+    sendqueue->sendqueue_head = NULL;                                    //初始化工作队列头
+    sendqueue->cur_sendtask_size = 0;
+    sendqueue->sndthreadid =(pthread_t *) malloc (sizeof (pthread_t));   //创建线程id
+
+    return sendqueue;
+}
+
+/*加入数据发送任务
+参数：要发送的数据
+*/
+int snd_add_task (void *arg,Cthread_sendworkqueue * sndqueue)
+{
+    Cthread_sendtask *new_task = (Cthread_sendtask *) malloc (sizeof (Cthread_sendtask));//构造一个新任务
+    new_task->canbussend = canbussend;      //执行的任务
+    new_task->arg = arg;                    //参数
+    new_task->next = NULL;
+
+    pthread_mutex_lock (&(sndqueue->sendqueue_lock));
+    /*将任务加入到等待队列中*/
+    Cthread_sendtask *member = sndqueue->sendqueue_head;
+    if (member != NULL)
+    {
+        while (member->next != NULL)        //while循环查找任务末尾
+            member = member->next;
+        member->next = new_task;
+    }
+    else
+    {
+        sndqueue->sendqueue_head = new_task;
+    }
+
+    sndqueue->cur_sendtask_size++;
+    pthread_mutex_unlock (&(sndqueue->sendqueue_lock)); //工作队列数量++
+
+    pthread_cond_signal (&(sndqueue->sendqueue_ready)); //通知线程ok
+
+    return 0;
+}
+
+void * snd_thread(void *arg)
+{
+    #ifdef DEBUG
+    printf ("***SEND PTHREAD:starting thread 0x%x\n", pthread_self ());
+    #endif // DEBUG
+    while (1)
+    {
+        pthread_mutex_lock (&(sndqueue->sendqueue_lock));
+
+        while (sndqueue->cur_sendtask_size == 0 && !sndqueue->sendshutdown) //如果没有任务就等待
+        {
+            #ifdef DEBUG
+            printf ("***SEND PTHREAD 0x%x is waiting\n", pthread_self ());
+            #endif // DEBUG
+            pthread_cond_wait (&(sndqueue->sendqueue_ready), &(pool->sendqueue_lock)); //等待！
+        }
+
+        /*线程池要销毁了*/
+        if (pool->shutdown)
+        {
+            pthread_mutex_unlock (&(sndqueue->sendqueue_lock));
+            printf ("***SEND PTHREAD 0x%x  will exit\n", pthread_self ());
+            pthread_exit (NULL);
+        }
+        #ifdef DEBUG
+        printf ("***SEND PTHREAD 0x%x  is starting to work\n", pthread_self ());
+        #endif // DEBUG
+
+        //开始处理任务
+        sndqueue->cur_sendtask_size--;
+        sendtask *task = sndqueue->sendqueue_head;
+        sndqueue->sendqueue_head = task->next;
+
+        pthread_mutex_unlock (&(sndqueue->sendqueue_lock));
+
+        //调用回调函数，执行任务
+        canbussend(task->arg);
+
+        free (task);
+        task = NULL;
+    }
+    /*这一句应该是不可达的*/
+    pthread_exit (NULL);
+
+}
+
+
+
+int snd_thread_create(Cthread_sendworkqueue * sndqueue)
+{
+   pthread_create(sndqueue->sndthreadid, NULL, snd_thread, NULL);
+   return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
